@@ -1,0 +1,6 @@
+/.idea/
+/rootfs-mnt/
+/rootfs.img
+/rootfs.img-mount
+/bzImage
+/initrd.img
