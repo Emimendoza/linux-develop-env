@@ -1,6 +1,10 @@
 /.idea/
 /rootfs-mnt/
-/rootfs.img
-/rootfs.img-mount
+/rootfs.qcow2
+/rootfs.qcow2-mount
+/rootfs.qcow2-bind
 /bzImage
+/_all
+/modules
 /initrd.img
+/linux/

@@ -1,3 +1,11 @@
+# REQUIREMENTS:
+# ARCH LINUX (this script is arch specific)
+# The following packages:
+# qemu arch-install-scripts pkexec fakeroot fakechroot gcc make qemu-img parted
+# Optional but recommended:
+# ccache
+
+
 .ONESHELL:
 SHELL := /bin/bash
 .SHELLFLAGS := -e -c
@@ -5,65 +13,134 @@ SHELL := /bin/bash
 # It assumes a host system running arch linux
 
 # User defined variables
-CC=ccache gcc
-QEMU=qemu-system-x86_64
+# We want to use ccache if it's available
+CC := $(shell which ccache 2>/dev/null || true) gcc
 MAKE_ARGS=-j10
+# The size of the guest disk
+DISK_SIZE=10G
+# The filesystem to use (useful for testing other filesystems)
+# Make sure your kernel supports it
+DISK_MKFS=mkfs.ext4
+# The nbd device to use MAKE SURE IT'S NOT IN USE
+DEFAULT_NBD_DEV=/dev/nbd0
+QEMU=qemu-system-x86_64
+
+QEMU_ARGS=-m 4096 \
+ -kernel bzImage \
+ -initrd initrd.img \
+ -append "root=/dev/sda rw" \
+ -drive file=./rootfs.qcow2,format=raw,index=0,media=disk
+
 
 # Internals
 ROOTFS_DIR=$(shell pwd)/rootfs-mnt
 MODULES_DIR=$(ROOTFS_DIR)/
-QEMU_ARGS=-m 512 -kernel bzImage -initrd initrd.img -append "root=/dev/hda rw" -hda rootfs.img
+
+# We need to use sudo to mount the filesystem
+# Prepare to type your password a million times because pkexec is annoying
 SUDO=./pk
+# SUDO=sudo # uncomment this line if you don't want to use pkexec
+FAKE_SUDO=fakeroot
+FAKE_CHROOT=fakechroot fakeroot chroot
 
-all: rootfs.img bzImage initrd.img
+KERNEL_NAME=$(shell make -C linux kernelrelease --no-print-directory)
 
-initrd.img: bzImage modules rootfs.img-mount
-	$(SUDO) arch-chroot $(ROOTFS_DIR) mkinitcpio -k $(LINUX_NAME) -g /boot/initrd.img
-	$(SUDO) cp $(ROOTFS_DIR)/boot/initrd.img .
-	$(SUDO) chown $(USER) initrd.img
+all: rootfs.qcow2 bzImage initrd.img
+	touch _all
 
-modules: bzImage rootfs.img-mount
+_all:
+	# If the kernel is already built, do nothing
+	[ -f _all ] && exit || true
+	$(MAKE) modules
+	$(MAKE) bzImage
+	$(MAKE) initrd.img
+	touch _all
+
+initrd.img: bzImage modules rootfs.qcow2-mount
+	# If the initrd is already built, do nothing
+	[ -f initrd.img ] && exit || true
+	# mkinitcpio treats warnings as errors for some reason
+	$(FAKE_CHROOT) $(ROOTFS_DIR) mkinitcpio -n -k "$(KERNEL_NAME)" -g /boot/initrd.img || true # ignore errors
+	$(FAKE_SUDO) cp $(ROOTFS_DIR)/boot/initrd.img $(shell pwd)/initrd.img
+	$(FAKE_SUDO) chown $(USER) "$(pwd)/initrd.img"
+modules: bzImage rootfs.qcow2-mount
+	# if the modules are already built, do nothing
+	[ -f modules ] && exit || true
 	$(MAKE) -C linux CC="$(CC)" $(MAKE_ARGS) modules
-	$(MAKE) -C linux CC="$(CC)" $(MAKE_ARGS) INSTALL_MOD_PATH="$(shell cd linux; make kernelrelease)" modules_install
+	$(MAKE) -C linux CC="$(CC)" $(MAKE_ARGS) INSTALL_MOD_PATH="$(ROOTFS_DIR)/" modules_install
 	touch modules
 
-bzImage: linux/.config
+bzImage: linux/.config rootfs.qcow2-mount
+	# If the kernel is already built, do nothing
+	[ -f bzImage ] && exit || true
 	$(MAKE) -C linux CC="$(CC)" $(MAKE_ARGS) bzImage
 	cp linux/arch/x86/boot/bzImage bzImage
+	$(FAKE_SUDO) cp bzImage "$(ROOTFS_DIR)/boot/vmlinuz-linux$(KERNEL_NAME)"
 
 linux/.config: linux
-	zcat /proc/config.gz > linux/.config
-	$(MAKE) -C linux olddefconfig clean
+	# Only copy the config if it doesn't exist
+	[ -f linux/.config ] || zcat /proc/config.gz > linux/.config
+	$(MAKE) -C linux olddefconfig
 
-clean: rootfs.img-unmount
+rebuild: clean all
+
+clean: rootfs.qcow2-unmount
 	$(MAKE) -C linux clean || true
-	rm -f rootfs.img bzImage initrd.img modules
+	rm -f bzImage initrd.img modules _all
 
-rootfs.img: $(ROOTFS_DIR)
-	dd if=/dev/zero of=rootfs.img bs=1M count=5000
-	mkfs.ext4 rootfs.img
-	$(SUDO) mount $(shell pwd)/rootfs.img $(ROOTFS_DIR)
-	$(SUDO) pacstrap -c $(ROOTFS_DIR) base coreutils mkinitcpio kmod
-	$(SUDO) chown -R $(USER) $(ROOTFS_DIR)
-	$(SUDO) umount $(ROOTFS_DIR)
+deep-clean: clean
+	$(MAKE) -C linux distclean || true
+	rm -rf rootfs.qcow2 rootfs-mnt
+	$(SUDO) modprobe -r nbd 2> /dev/null || true
 
-rootfs.img-mount: rootfs.img $(ROOTFS_DIR)
+rootfs.qcow2: $(ROOTFS_DIR)
+	# If the rootfs is already built, do nothing
+	[ -f rootfs.qcow2 ] && exit || true
+	qemu-img create -f qcow2 rootfs.qcow2 $(DISK_SIZE)
+	$(MAKE) rootfs.qcow2-bind
+	$(SUDO) parted -s $(DEFAULT_NBD_DEV) mklabel gpt mkpart primary ext4 1MiB 100%
+	$(SUDO) $(DISK_MKFS) $(DEFAULT_NBD_DEV)p1
+	$(MAKE) rootfs.qcow2-mount
+	# pacstrap doesnt work with fakeroot :c
+	$(SUDO) pacstrap -c $(ROOTFS_DIR) base linux-firmware mkinitcpio kmod coreutils
+
+rootfs.qcow2-bind: nbd
+	# If the rootfs is bound, do nothing
+	[ -f rootfs.qcow2-bind ] && exit || true
+	$(SUDO) qemu-nbd -c $(DEFAULT_NBD_DEV) $(shell pwd)/rootfs.qcow2
+	touch rootfs.qcow2-bind
+
+rootfs.qcow2-unbind:
+	# If the rootfs is bound, unbind it
+	[ -f rootfs.qcow2-bind ] && $(SUDO) qemu-nbd -d $(DEFAULT_NBD_DEV) || true
+	rm -f rootfs.qcow2-bind
+
+rootfs.qcow2-mount: rootfs.qcow2 $(ROOTFS_DIR) rootfs.qcow2-bind
 	# If the rootfs is mounted, do nothing
-	[ -f rootfs.img-mount ] || $(SUDO) mount $(shell pwd)/rootfs.img $(ROOTFS_DIR)
-	touch rootfs.img-mount
+	[ -f rootfs.qcow2-mount ] && exit || true
+	$(SUDO) mount $(DEFAULT_NBD_DEV)p1 $(ROOTFS_DIR)
+	$(SUDO) chown -R $(USER) $(ROOTFS_DIR)
+	touch rootfs.qcow2-mount
 
-rootfs.img-unmount:
+rootfs.qcow2-unmount:
 	# If the rootfs is mounted, unmount it
-	[ -f rootfs.img-mount ] && $(SUDO) umount $(ROOTFS_DIR) || true
-	rm -f rootfs.img-mount
+	while df | grep -q "$(ROOTFS_DIR)"; do $(SUDO) umount $(ROOTFS_DIR); done
+	rm -rf $(ROOTFS_DIR)
+	rm -f rootfs.qcow2-mount
+	$(MAKE) rootfs.qcow2-unbind
 
 $(ROOTFS_DIR):
 	mkdir -p $(ROOTFS_DIR)
 
-run: all rootfs.img-unmount
+run: _all rootfs.qcow2-unmount
 	$(QEMU) $(QEMU_ARGS)
 
 linux:
 	git submodule update --init --recursive
 
-.PHONY: rootfs.img-unmount
+# Loads the nbd module
+nbd:
+	# Needed for mounting the rootfs
+	lsmod | grep -q nbd || $(SUDO) modprobe nbd max_part=8
+
+.PHONY: rootfs.qcow2-unmount clean deep-clean run rebuild all nbd rootfs.qcow2-bind
