@@ -105,7 +105,7 @@ clean-rootfs:
 	rm -f rootfs.qcow2
 
 
-clean: rootfs.qcow2-unmount
+clean: rootfs.qcow2-unmount rootfs.qcow2-unbind
 	$(MAKE) -C linux clean || true
 	rm -f bzImage initrd.img modules _all
 
