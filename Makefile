@@ -92,7 +92,9 @@ linux/.config: linux
 	[ -f linux/.config ] || zcat /proc/config.gz > linux/.config
 	$(MAKE) -C linux olddefconfig
 
-rebuild: clean all
+rebuild:
+	rm -f bzImage initrd.img modules _all
+	$(MAKE) all
 
 clean-rootfs:
 	# If the rootfs isnt built, do nothing
