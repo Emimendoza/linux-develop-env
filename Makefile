@@ -26,11 +26,21 @@ DEFAULT_NBD_DEV=/dev/nbd0
 QEMU=qemu-system-x86_64
 
 QEMU_ARGS=-m 4096 \
+ -enable-kvm \
+ -cpu host \
+ -smp cores=1,threads=2 \
  -kernel bzImage \
  -initrd initrd.img \
- -append "root=/dev/sda rw" \
- -drive file=./rootfs.qcow2,format=raw,index=0,media=disk
+ -append "root=/dev/sda1 rw" \
+ -drive file=./rootfs.qcow2,format=qcow2,if=none,id=d0 \
+ -device ahci,id=ahci \
+ -device ide-hd,drive=d0,bus=ahci.0
 
+PACSTRAP_MODULES=base \
+ linux-firmware \
+ mkinitcpio \
+ kmod coreutils \
+ bash
 
 # Internals
 ROOTFS_DIR=$(shell pwd)/rootfs-mnt
@@ -84,6 +94,17 @@ linux/.config: linux
 
 rebuild: clean all
 
+clean-rootfs:
+	# If the rootfs isnt built, do nothing
+	[ -f rootfs.qcow2 ] || exit
+	if [ -d $(ROOTFS_DIR) ]; then \
+  		$(SUDO) umount -l $(ROOTFS_DIR); \
+		rm -rf $(ROOTFS_DIR) rootfs.qcow2-mount; \
+	fi
+	$(MAKE) rootfs.qcow2-unbind
+	rm -f rootfs.qcow2
+
+
 clean: rootfs.qcow2-unmount
 	$(MAKE) -C linux clean || true
 	rm -f bzImage initrd.img modules _all
@@ -102,7 +123,11 @@ rootfs.qcow2: $(ROOTFS_DIR)
 	$(SUDO) $(DISK_MKFS) $(DEFAULT_NBD_DEV)p1
 	$(MAKE) rootfs.qcow2-mount
 	# pacstrap doesnt work with fakeroot :c
-	$(SUDO) pacstrap -c $(ROOTFS_DIR) base linux-firmware mkinitcpio kmod coreutils
+	$(SUDO) pacstrap -c $(ROOTFS_DIR) $(PACSTRAP_MODULES)
+	$(SUDO) chown -R $(USER) $(ROOTFS_DIR)
+	# Enable autologin
+	$(FAKE_SUDO) cp ./autologin@.service $(ROOTFS_DIR)/etc/systemd/system/autologin@.service
+	$(FAKE_CHROOT) $(ROOTFS_DIR) systemctl enable autologin@tty1.service
 
 rootfs.qcow2-bind: nbd
 	# If the rootfs is bound, do nothing
@@ -124,7 +149,11 @@ rootfs.qcow2-mount: rootfs.qcow2 $(ROOTFS_DIR) rootfs.qcow2-bind
 
 rootfs.qcow2-unmount:
 	# If the rootfs is mounted, unmount it
-	while df | grep -q "$(ROOTFS_DIR)"; do $(SUDO) umount $(ROOTFS_DIR); done
+	# Fix permissions
+	if df | grep -q "$(ROOTFS_DIR)"; then \
+  		$(SUDO) chown -R 0:0 $(ROOTFS_DIR); \
+		$(SUDO) umount $(ROOTFS_DIR); \
+	fi
 	rm -rf $(ROOTFS_DIR)
 	rm -f rootfs.qcow2-mount
 	$(MAKE) rootfs.qcow2-unbind

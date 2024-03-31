@@ -1,0 +1,11 @@
+# We need to create a service that will automatically log in the root
+[Unit]
+Description=Auto Login Service
+After=agetty.target
+
+[Service]
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+Type=idle
+
+[Install]
+WantedBy=multi-user.target

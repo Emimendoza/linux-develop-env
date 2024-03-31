@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-pkexec --user root "${@}"
-# Check the exit status of pkexec
-if [ $? -ne 0 ]; then
-    exit 1
-fi
+
+PATH_OF_COMMAND=$(which "$1")
+shift
+echo Running "$PATH_OF_COMMAND $*" as root
+while true ; do
+  pkexec --user root bash -c "while true; do $PATH_OF_COMMAND $* && break || echo 'Trying Again in 5 secs...' && sleep 1; done"
+  if [ $? -eq 0 ]; then
+    break
+  fi
+done
