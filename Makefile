@@ -109,9 +109,8 @@ clean: rootfs.qcow2-unmount rootfs.qcow2-unbind
 	$(MAKE) -C linux clean || true
 	rm -f bzImage initrd.img modules _all
 
-deep-clean: clean
+deep-clean: clean-rootfs clean
 	$(MAKE) -C linux distclean || true
-	rm -rf rootfs.qcow2 rootfs-mnt
 	$(SUDO) modprobe -r nbd 2> /dev/null || true
 
 rootfs.qcow2: $(ROOTFS_DIR)
