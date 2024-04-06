@@ -138,7 +138,7 @@ rootfs.qcow2-bind: nbd
 
 rootfs.qcow2-unbind:
 	# If the rootfs is bound, unbind it
-	[ -f rootfs.qcow2-bind ] && $(SUDO) qemu-nbd -d $(DEFAULT_NBD_DEV) || true
+	[ -f rootfs.qcow2-bind ] && lsmod | grep -q nbd && $(SUDO) qemu-nbd -d $(DEFAULT_NBD_DEV) || true
 	rm -f rootfs.qcow2-bind
 
 rootfs.qcow2-mount: rootfs.qcow2 $(ROOTFS_DIR) rootfs.qcow2-bind
